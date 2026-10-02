@@ -1,0 +1,36 @@
+# VoxelDevelopment runtime state.
+enabled: false
+
+features:
+  join-overlay:
+    enabled: true
+    join-delay-ticks: 10
+    inventory-title: ':offset_-8::development_testing_network:'
+    blindness:
+      enabled: true
+      amplifier: 0
+    block:
+      movement: true
+      interactions: true
+      inventory-clicks: true
+      inventory-drags: true
+      commands: true
+      chat: true
+      teleports: true
+      damage: true
+      hunger: true
+    allow-commands:
+      - vdev
+      - voxeldev
+      - development
+
+messages:
+  prefix: '&8[&bVoxelDevelopment&8] &7'
+  enabled: '&aDevelopment mode enabled.'
+  disabled: '&cDevelopment mode disabled.'
+  status-on: '&aDevelopment mode is ON.'
+  status-off: '&cDevelopment mode is OFF.'
+  reloaded: '&aConfiguration reloaded.'
+  no-player: '&cPlayer not found.'
+  shown: '&aDevelopment screen shown to &f%player%&a.'
+  cleared: '&aCleared development screen for &f%player%&a.'
