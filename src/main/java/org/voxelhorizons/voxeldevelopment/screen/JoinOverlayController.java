@@ -7,6 +7,7 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityDamageEvent;
+import org.bukkit.event.entity.EntityPickupItemEvent;
 import org.bukkit.event.entity.FoodLevelChangeEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryCloseEvent;
@@ -20,20 +21,26 @@ import org.bukkit.event.player.PlayerItemHeldEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.event.player.PlayerSwapHandItemsEvent;
 import org.bukkit.event.player.PlayerTeleportEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.potion.PotionEffect;
 import org.bukkit.potion.PotionEffectType;
 import org.bukkit.util.Vector;
 import org.voxelhorizons.voxeldevelopment.VoxelDevelopmentPlugin;
+import org.voxelhorizons.voxeldevelopment.screen.InventorySnapshotStore.InventorySnapshot;
 import org.voxelhorizons.voxeldevelopment.text.TextResolver;
 
+import java.io.IOException;
 import java.lang.reflect.Constructor;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import java.util.logging.Level;
 
 public final class JoinOverlayController implements Listener {
 
@@ -41,11 +48,14 @@ public final class JoinOverlayController implements Listener {
 
     private final VoxelDevelopmentPlugin plugin;
     private final TextResolver textResolver;
+    private final InventorySnapshotStore snapshots;
     private final Map<UUID, ScreenSession> active = new HashMap<UUID, ScreenSession>();
+    private final Set<UUID> pendingJoinScreens = new HashSet<UUID>();
 
     public JoinOverlayController(VoxelDevelopmentPlugin plugin) {
         this.plugin = plugin;
         this.textResolver = new TextResolver(plugin);
+        this.snapshots = new InventorySnapshotStore(plugin);
     }
 
     public int activeCount() {
@@ -56,15 +66,31 @@ public final class JoinOverlayController implements Listener {
         return player != null && active.containsKey(player.getUniqueId());
     }
 
+    public void recoverOnlinePlayers() {
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            snapshots.restoreIfPresent(player);
+        }
+    }
+
     public void show(Player player, boolean forced) {
-        if (player == null || !player.isOnline()) return;
+        showInternal(player, forced);
+    }
+
+    private boolean showInternal(Player player, boolean forced) {
+        if (player == null || !player.isOnline()) return false;
         if (!forced) {
-            if (!plugin.isDevelopmentEnabled()) return;
-            if (!plugin.getConfig().getBoolean("features.join-overlay.enabled", true)) return;
-            if (player.hasPermission("voxeldevelopment.bypass")) return;
+            if (!plugin.isDevelopmentEnabled()) return false;
+            if (!plugin.getConfig().getBoolean("features.join-overlay.enabled", true)) return false;
+            if (player.hasPermission("voxeldevelopment.bypass")) return false;
         }
 
+        // Never stack sessions. A replacement first restores the previous authoritative
+        // snapshot and closes the old blocker before capturing again.
         clear(player);
+
+        // If a previous server/process interruption left a recovery snapshot, restore it
+        // before starting a new overlay. This prevents capturing an already-cleared inventory.
+        snapshots.restoreIfPresent(player);
 
         String configuredTitle = plugin.getConfig().getString(
                 "features.join-overlay.inventory-title",
@@ -80,9 +106,24 @@ public final class JoinOverlayController implements Listener {
             inventory = Bukkit.createInventory(null, 54, "Development Notice");
         }
 
+        final InventorySnapshot snapshot;
+        try {
+            // Disk snapshot MUST exist before a single live slot is cleared.
+            snapshot = snapshots.capture(player);
+        } catch (IOException exception) {
+            plugin.getLogger().log(Level.SEVERE,
+                    "Refusing to open development overlay for " + player.getName()
+                            + " because their inventory recovery snapshot could not be saved.", exception);
+            return false;
+        }
+
         PotionEffect previousBlindness = player.getPotionEffect(PotionEffectType.BLINDNESS);
-        ScreenSession session = new ScreenSession(inventory, previousBlindness);
+        ScreenSession session = new ScreenSession(inventory, previousBlindness, snapshot, System.currentTimeMillis());
         active.put(player.getUniqueId(), session);
+
+        // Once the snapshot is durable, the live inventory becomes intentionally empty
+        // so held/armor/custom-model items cannot render over the menu.
+        snapshots.clearLiveInventory(player);
 
         if (plugin.getConfig().getBoolean("features.join-overlay.blindness.enabled", true)) {
             player.removePotionEffect(PotionEffectType.BLINDNESS);
@@ -91,6 +132,7 @@ public final class JoinOverlayController implements Listener {
 
         player.setVelocity(new Vector(0, 0, 0));
         player.openInventory(inventory);
+        return true;
     }
 
     public void clear(Player player) {
@@ -101,6 +143,17 @@ public final class JoinOverlayController implements Listener {
         if (player == null) return;
         ScreenSession session = active.remove(player.getUniqueId());
         if (session == null) return;
+
+        // Restore inventory first. The recovery file is deleted only after restoration
+        // succeeds, leaving a durable fallback if anything goes wrong.
+        try {
+            snapshots.restore(player, session.inventorySnapshot);
+            snapshots.delete(player.getUniqueId());
+        } catch (RuntimeException exception) {
+            plugin.getLogger().log(Level.SEVERE,
+                    "Failed to restore inventory for " + player.getName()
+                            + ". Recovery file has been retained.", exception);
+        }
 
         player.removePotionEffect(PotionEffectType.BLINDNESS);
         if (session.previousBlindness != null) {
@@ -115,6 +168,7 @@ public final class JoinOverlayController implements Listener {
     }
 
     public void clearAll() {
+        pendingJoinScreens.clear();
         for (UUID uuid : active.keySet().toArray(new UUID[0])) {
             Player player = Bukkit.getPlayer(uuid);
             if (player != null) clear(player);
@@ -124,24 +178,79 @@ public final class JoinOverlayController implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onJoin(PlayerJoinEvent event) {
+        final Player joiningPlayer = event.getPlayer();
+
+        // Recovery is independent of whether development mode is currently enabled.
+        // A crash/restart during an old overlay must never strand a cleared inventory.
+        snapshots.restoreIfPresent(joiningPlayer);
+
         if (!plugin.isDevelopmentEnabled()) return;
         if (!plugin.getConfig().getBoolean("features.join-overlay.enabled", true)) return;
-        if (event.getPlayer().hasPermission("voxeldevelopment.bypass")) return;
+        if (joiningPlayer.hasPermission("voxeldevelopment.bypass")) return;
 
-        long delay = Math.max(0L,
-                plugin.getConfig().getLong("features.join-overlay.join-delay-ticks", 10L));
-        final UUID uuid = event.getPlayer().getUniqueId();
+        final UUID uuid = joiningPlayer.getUniqueId();
+        pendingJoinScreens.add(uuid);
+
+        long baseDelay = Math.max(0L,
+                plugin.getConfig().getLong("features.join-overlay.join-delay-ticks", 20L));
+
+        List<Integer> retries = plugin.getConfig().getIntegerList(
+                "features.join-overlay.join-retry-delays-ticks");
+        if (retries.isEmpty()) {
+            scheduleJoinAttempt(uuid, baseDelay);
+            scheduleJoinAttempt(uuid, baseDelay + 20L);
+            scheduleJoinAttempt(uuid, baseDelay + 60L);
+        } else {
+            for (Integer retry : retries) {
+                long extra = retry == null ? 0L : Math.max(0, retry.intValue());
+                scheduleJoinAttempt(uuid, baseDelay + extra);
+            }
+        }
+    }
+
+    private void scheduleJoinAttempt(final UUID uuid, long delay) {
         Bukkit.getScheduler().runTaskLater(plugin, new Runnable() {
             @Override
             public void run() {
+                if (!pendingJoinScreens.contains(uuid)) return;
+
                 Player player = Bukkit.getPlayer(uuid);
-                if (player != null && player.isOnline()) show(player, false);
+                if (player == null || !player.isOnline()) {
+                    pendingJoinScreens.remove(uuid);
+                    return;
+                }
+
+                if (!plugin.isDevelopmentEnabled()
+                        || !plugin.getConfig().getBoolean("features.join-overlay.enabled", true)
+                        || player.hasPermission("voxeldevelopment.bypass")) {
+                    pendingJoinScreens.remove(uuid);
+                    return;
+                }
+
+                if (!isActive(player) && !showInternal(player, false)) return;
+
+                // A join plugin can open/close inventories in the same few ticks. Only mark
+                // the join screen as successfully delivered once ours remains the active view.
+                Bukkit.getScheduler().runTaskLater(plugin, new Runnable() {
+                    @Override
+                    public void run() {
+                        Player verified = Bukkit.getPlayer(uuid);
+                        ScreenSession session = active.get(uuid);
+                        if (verified != null && verified.isOnline() && session != null
+                                && verified.getOpenInventory() != null
+                                && verified.getOpenInventory().getTopInventory().equals(session.inventory)) {
+                            pendingJoinScreens.remove(uuid);
+                        }
+                    }
+                }, Math.max(1L, plugin.getConfig().getLong(
+                        "features.join-overlay.join-verification-ticks", 5L)));
             }
         }, delay);
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onQuit(PlayerQuitEvent event) {
+        pendingJoinScreens.remove(event.getPlayer().getUniqueId());
         clear(event.getPlayer(), false);
     }
 
@@ -152,8 +261,14 @@ public final class JoinOverlayController implements Listener {
         ScreenSession session = active.get(player.getUniqueId());
         if (session == null || !session.inventory.equals(event.getInventory())) return;
 
+        long guardMillis = Math.max(0L, plugin.getConfig().getLong(
+                "features.join-overlay.join-close-guard-millis", 750L));
+        boolean likelyJoinCollision = pendingJoinScreens.contains(player.getUniqueId())
+                && (System.currentTimeMillis() - session.openedAtMillis) < guardMillis;
+
         // Minecraft sends the same close-container packet for Escape and the inventory
-        // key. Treat any client close of this dedicated blocker inventory as dismissal.
+        // key. After the short join-collision guard, any close is treated as dismissal.
+        if (!likelyJoinCollision) pendingJoinScreens.remove(player.getUniqueId());
         clear(player, false);
     }
 
@@ -201,6 +316,17 @@ public final class JoinOverlayController implements Listener {
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onHeld(PlayerItemHeldEvent event) {
         if (blocked(event.getPlayer(), "interactions")) event.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onSwap(PlayerSwapHandItemsEvent event) {
+        if (blocked(event.getPlayer(), "interactions")) event.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onPickup(EntityPickupItemEvent event) {
+        if (!(event.getEntity() instanceof Player)) return;
+        if (blocked((Player) event.getEntity(), "interactions")) event.setCancelled(true);
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -287,10 +413,17 @@ public final class JoinOverlayController implements Listener {
     private static final class ScreenSession {
         private final Inventory inventory;
         private final PotionEffect previousBlindness;
+        private final InventorySnapshot inventorySnapshot;
+        private final long openedAtMillis;
 
-        private ScreenSession(Inventory inventory, PotionEffect previousBlindness) {
+        private ScreenSession(Inventory inventory,
+                              PotionEffect previousBlindness,
+                              InventorySnapshot inventorySnapshot,
+                              long openedAtMillis) {
             this.inventory = inventory;
             this.previousBlindness = previousBlindness;
+            this.inventorySnapshot = inventorySnapshot;
+            this.openedAtMillis = openedAtMillis;
         }
     }
 }
