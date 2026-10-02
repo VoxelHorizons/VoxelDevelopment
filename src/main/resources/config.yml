@@ -4,7 +4,24 @@ enabled: false
 features:
   join-overlay:
     enabled: true
-    join-delay-ticks: 10
+
+    # Delay before the first automatic join attempt. A slightly later initial open
+    # avoids fighting with join/pack/teleport plugins during the first few ticks.
+    join-delay-ticks: 20
+
+    # Additional delays, relative to join-delay-ticks, used only until the overlay
+    # is verified as the active inventory. This makes rapid relogs/join races reliable
+    # without reopening a screen after a normal dismissal.
+    join-retry-delays-ticks:
+      - 0
+      - 20
+      - 60
+    join-verification-ticks: 5
+
+    # If another join plugin displaces the inventory almost immediately, keep the
+    # retry pending. Normal closes after this guard are treated as player dismissal.
+    join-close-guard-millis: 750
+
     inventory-title: ':offset_-8::development_testing_network:'
     blindness:
       enabled: true
