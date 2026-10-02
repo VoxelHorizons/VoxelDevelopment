@@ -1,0 +1,20 @@
+name: VoxelDevelopment
+main: org.voxelhorizons.voxeldevelopment.VoxelDevelopmentPlugin
+version: 1.0-SNAPSHOT
+author: VoxelHorizons
+description: Development-session controls and join screens for Voxel Horizons.
+softdepend: [VoxelCore, PlaceholderAPI]
+${plugin.api.version}
+commands:
+  vdev:
+    description: Manage VoxelDevelopment.
+    usage: /vdev <on|off|status|show|clear|reload>
+    aliases: [voxeldev, development]
+    permission: voxeldevelopment.admin
+permissions:
+  voxeldevelopment.admin:
+    description: Manage development mode and screens.
+    default: op
+  voxeldevelopment.bypass:
+    description: Bypass automatic development join screens.
+    default: op
