@@ -20,6 +20,7 @@ public final class VoxelDevelopmentPlugin extends JavaPlugin {
 
         overlayController = new JoinOverlayController(this);
         getServer().getPluginManager().registerEvents(overlayController, this);
+        overlayController.recoverOnlinePlayers();
 
         DevelopmentCommand command = new DevelopmentCommand(this, overlayController);
         PluginCommand pluginCommand = getCommand("vdev");
