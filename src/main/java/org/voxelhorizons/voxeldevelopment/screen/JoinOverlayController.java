@@ -81,7 +81,7 @@ public final class JoinOverlayController implements Listener {
         if (!forced) {
             if (!plugin.isDevelopmentEnabled()) return false;
             if (!plugin.getConfig().getBoolean("features.join-overlay.enabled", true)) return false;
-            if (player.hasPermission("voxeldevelopment.bypass")) return false;
+            if (shouldBypass(player)) return false;
         }
 
         // Never stack sessions. A replacement first restores the previous authoritative
@@ -186,7 +186,7 @@ public final class JoinOverlayController implements Listener {
 
         if (!plugin.isDevelopmentEnabled()) return;
         if (!plugin.getConfig().getBoolean("features.join-overlay.enabled", true)) return;
-        if (joiningPlayer.hasPermission("voxeldevelopment.bypass")) return;
+        if (shouldBypass(joiningPlayer)) return;
 
         final UUID uuid = joiningPlayer.getUniqueId();
         pendingJoinScreens.add(uuid);
@@ -222,7 +222,7 @@ public final class JoinOverlayController implements Listener {
 
                 if (!plugin.isDevelopmentEnabled()
                         || !plugin.getConfig().getBoolean("features.join-overlay.enabled", true)
-                        || player.hasPermission("voxeldevelopment.bypass")) {
+                        || shouldBypass(player)) {
                     pendingJoinScreens.remove(uuid);
                     return;
                 }
@@ -356,6 +356,12 @@ public final class JoinOverlayController implements Listener {
     public void onFood(FoodLevelChangeEvent event) {
         if (!(event.getEntity() instanceof Player)) return;
         if (blocked((Player) event.getEntity(), "hunger")) event.setCancelled(true);
+    }
+
+    private boolean shouldBypass(Player player) {
+        return plugin.getConfig().getBoolean("features.join-overlay.use-bypass-permission", false)
+                && player != null
+                && player.hasPermission("voxeldevelopment.bypass");
     }
 
     private boolean blocked(Player player, String flag) {
