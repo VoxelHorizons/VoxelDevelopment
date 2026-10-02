@@ -16,5 +16,5 @@ permissions:
     description: Manage development mode and screens.
     default: op
   voxeldevelopment.bypass:
-    description: Bypass automatic development join screens.
-    default: op
+    description: Bypass automatic development join screens when bypass permission checks are enabled.
+    default: false
