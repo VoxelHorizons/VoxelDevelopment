@@ -24,6 +24,7 @@ import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerSwapHandItemsEvent;
 import org.bukkit.event.player.PlayerTeleportEvent;
 import org.bukkit.inventory.Inventory;
+import org.bukkit.inventory.ItemStack;
 import org.bukkit.potion.PotionEffect;
 import org.bukkit.potion.PotionEffectType;
 import org.bukkit.util.Vector;
@@ -49,6 +50,7 @@ public final class JoinOverlayController implements Listener {
     private final VoxelDevelopmentPlugin plugin;
     private final TextResolver textResolver;
     private final InventorySnapshotStore snapshots;
+    private final HelpItemFactory helpItems;
     private final Map<UUID, ScreenSession> active = new HashMap<UUID, ScreenSession>();
     private final Set<UUID> pendingJoinScreens = new HashSet<UUID>();
 
@@ -56,6 +58,7 @@ public final class JoinOverlayController implements Listener {
         this.plugin = plugin;
         this.textResolver = new TextResolver(plugin);
         this.snapshots = new InventorySnapshotStore(plugin);
+        this.helpItems = new HelpItemFactory(plugin, textResolver);
     }
 
     public int activeCount() {
@@ -124,6 +127,7 @@ public final class JoinOverlayController implements Listener {
         // Once the snapshot is durable, the live inventory becomes intentionally empty
         // so held/armor/custom-model items cannot render over the menu.
         snapshots.clearLiveInventory(player);
+        placeHelpItem(player);
 
         if (plugin.getConfig().getBoolean("features.join-overlay.blindness.enabled", true)) {
             player.removePotionEffect(PotionEffectType.BLINDNESS);
@@ -274,9 +278,16 @@ public final class JoinOverlayController implements Listener {
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onClick(InventoryClickEvent event) {
-        if (!blocked(event.getWhoClicked() instanceof Player ? (Player) event.getWhoClicked() : null,
-                "inventory-clicks")) return;
+        Player player = event.getWhoClicked() instanceof Player ? (Player) event.getWhoClicked() : null;
+        if (!blocked(player, "inventory-clicks")) return;
         event.setCancelled(true);
+
+        if (player != null
+                && event.getClickedInventory() != null
+                && event.getClickedInventory().equals(player.getInventory())
+                && event.getSlot() == configuredHelpSlot()) {
+            triggerHelpItem(player);
+        }
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -356,6 +367,48 @@ public final class JoinOverlayController implements Listener {
     public void onFood(FoodLevelChangeEvent event) {
         if (!(event.getEntity() instanceof Player)) return;
         if (blocked((Player) event.getEntity(), "hunger")) event.setCancelled(true);
+    }
+
+    private void placeHelpItem(Player player) {
+        ItemStack help = helpItems.create(player);
+        if (help == null) return;
+        int slot = configuredHelpSlot();
+        player.getInventory().setItem(slot, help);
+        player.updateInventory();
+    }
+
+    private int configuredHelpSlot() {
+        int configured = plugin.getConfig().getInt("features.join-overlay.help-item.hotbar-slot", 9);
+        return Math.max(1, Math.min(9, configured)) - 1;
+    }
+
+    private void triggerHelpItem(final Player player) {
+        if (!plugin.getConfig().getBoolean("features.join-overlay.help-item.enabled", false)) return;
+
+        final String command = plugin.getConfig().getString(
+                "features.join-overlay.help-item.command", "").trim();
+        if (command.isEmpty()) return;
+
+        // Restore the authoritative player inventory before running anything. This keeps
+        // the temporary help control completely outside the saved inventory lifecycle.
+        pendingJoinScreens.remove(player.getUniqueId());
+        clear(player);
+
+        Bukkit.getScheduler().runTask(plugin, new Runnable() {
+            @Override
+            public void run() {
+                String resolved = textResolver.resolve(player, command);
+                while (resolved.startsWith("/")) resolved = resolved.substring(1);
+
+                String executor = plugin.getConfig().getString(
+                        "features.join-overlay.help-item.executor", "player");
+                if ("console".equalsIgnoreCase(executor)) {
+                    Bukkit.dispatchCommand(Bukkit.getConsoleSender(), resolved);
+                } else {
+                    player.performCommand(resolved);
+                }
+            }
+        });
     }
 
     private boolean shouldBypass(Player player) {

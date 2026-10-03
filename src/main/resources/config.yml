@@ -28,6 +28,18 @@ features:
     join-close-guard-millis: 750
 
     inventory-title: ':offset_-8::development_testing_network:'
+
+    help-item:
+      enabled: true
+      # VoxelCore ContentID. If no namespace is supplied, voxel: is assumed.
+      item: 'voxel:help'
+      # 1-9, matching the visible hotbar position. 9 aligns with the far-right help box.
+      hotbar-slot: 9
+      display-name: '&e&lNeed Help?'
+      lore:
+        - '&7Click to open the help menu.'
+      command: 'help'
+      executor: player
     blindness:
       enabled: true
       amplifier: 0
