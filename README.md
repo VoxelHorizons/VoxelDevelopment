@@ -78,6 +78,6 @@ The example image from the initial design is kept under `docs/testing-network.pn
 mvn clean package
 ```
 
-The GitHub Actions workflow builds API-specific descriptors from Minecraft 1.12 through 26.2, uploads the JARs as workflow artifacts, and publishes a rolling `latest` prerelease after pushes to `main`.
+The GitHub Actions workflow builds API-specific descriptors from Minecraft 1.12 through 26.3, uploads the JARs as workflow artifacts, and publishes a rolling `latest` prerelease after pushes to `main`.
 
 The implementation deliberately compiles against the 1.12.2 Spigot API and uses reflection for newer optional behaviour. Folia is not supported.
