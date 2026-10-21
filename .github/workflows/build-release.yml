@@ -60,6 +60,7 @@ jobs:
           build "1.25" "api-version: '1.25'"
           build "26.1" "api-version: '26.1'"
           build "26.2" "api-version: '26.2'"
+          build "26.3" "api-version: '26.3'"
 
       - name: Validate generated descriptors
         shell: bash
@@ -75,6 +76,7 @@ jobs:
               "1.19": "1.19", "1.20": "1.20", "1.21": "1.21",
               "1.22": "1.22", "1.23": "1.23", "1.24": "1.24",
               "1.25": "1.25", "26.1": "26.1", "26.2": "26.2",
+              "26.3": "26.3",
           }
 
           for suffix, api in expected.items():
